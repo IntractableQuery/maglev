@@ -5,11 +5,13 @@ module Kernel
   # _smalltalk_global_put for use by bootstrap code only
   primitive_nobridge '__smalltalk_global_put', 'smalltalkUserGlobalsAt:put:'
 
-  # Print messages for stubbed methods
-  # presence of classvars disturbs specs, constants disturbs vmunit tests
-  # MAGLEV_WARNSTUB = false
-  # MAGLEV_SEEN = { }  # TODO, should be a transient hash
-
+  # Loads and executes the Ruby program in the file +name+.  If the
+  # filename does not resolve to an absolute path, the file is searched for
+  # in the library directories listed in <tt>$:</tt>.  If the optional
+  # +wrap+ parameter is +true+, the loaded script will be executed under an
+  # anonymous module, protecting the calling prgram's global namespace.  In
+  # no circumstances will any local variables in the loaded file be
+  # propagated to the loading environment.
   def load(name, wrap=false)
     if wrap
       raise ArgumentError , 'Kernel.load  , wrap==true not supported yet' # TODO
@@ -18,6 +20,9 @@ module Kernel
     true
   end
 
+  # Terminates execution immediately with an exit code of 1.  The optional
+  # String parameter is written to standard error before the program
+  # terminates.
   def abort(string=nil)
     unless string._equal?(nil)
       $stderr.write("#{string}\n")
@@ -27,21 +32,42 @@ module Kernel
 
   primitive_nobridge '__at_exit', 'atExit:'
 
+  # Converts block toa Proc object (and therefore binds it at the point of
+  # call) and registers it for execution when the program exits.  If
+  # multiple hanlders are registered, they are executed in reverse order of
+  # registration.
   def at_exit(&block)
     proc = Proc.new(&block)
     __at_exit(proc.__block )
     proc
   end
 
+  #--
   # See ruby-core:20222 for a discussion on whether to use Kernel#require
   # or some other private implementation for autoload.
+  #++
+  # call-seq:
+  #   autoload(name, file_name) => nil
+  #
+  # Registers +file_name+ to be loaded (using <tt>Kernel.require</tt>) the
+  # first time that the module +name+ (which may be a string or a symbol)
+  # is accessed.
   primitive_nobridge 'autoload', 'rubyKernelAutoload:file:'
+
+  # call-seq:
+  #   autoload?(name) => file_name or nil
+  #
+  # Returns the name of the file that will be autoloaded when the string or
+  # symbol +name+ is referenced in the top-level context or returns +nil+
+  # if there is no associated autoload.
   primitive_nobridge 'autoload?', 'rubyKernelAutoloadFileFor:'
 
   # binding defined in Kernel2.rb
 
   primitive_nobridge '__last_dnu_protection', '_lastDnuProtection'
 
+  # Returns the name of the current method or +nil+ outside the context of
+  # a method.
   def __method__(*args, &block)  # added for 1.8.7
     # always come here via a bridge method
     unless args.__size._equal?(0)
@@ -51,7 +77,7 @@ module Kernel
     mth = ctx_arr[-1]
     sel = nil
     unless mth._equal?(nil)
-      sel = mth.__name 
+      sel = mth.__name
     end
     sel
   end
@@ -61,12 +87,12 @@ module Kernel
   def method_missing(method_id, *args)
     prot = __last_dnu_protection()
     msg = if (prot._equal?(0))
-             "NoMethodError: undefined method `"
-           elsif (prot._equal?(1))
-             "NoMethodError: protected method `"
-           else
-             "NoMethodError: private method `"
-           end
+            "NoMethodError: undefined method `"
+          elsif (prot._equal?(1))
+            "NoMethodError: protected method `"
+          else
+            "NoMethodError: private method `"
+          end
     msg.__append(method_id)
     msg.__append( :"' for " )
     msg.__append( self.__name_for_mnu )  # Fix trac 752, don't use to_s
@@ -75,6 +101,11 @@ module Kernel
     exc.__signal
   end
 
+  # Returns the current execution stack -- an array containing strings in
+  # the form <tt>file:line</tt>, or <tt>file:line: in 'method'</tt>.  The
+  # optional +skip+ parameter determines the number of initial stack
+  # entries to omit from the result.  The optional +limit+ parameter
+  # determines the maximum number of frames to return.
   def caller(skip=0, limit=1000)
     # returns an Array of Strings, each element describes a stack frame
     unless skip._isFixnum
@@ -87,17 +118,173 @@ module Kernel
     res
   end
 
-  # def catch(aSymbol, &aBlock); end
+  # call-seq:
+  #   catch(object=Object.new) { block } => obj
+  #
+  # +catch+ executes its block.  If a +throw+ is encountered, Ruby searches
+  # up its stack fora a +catch+ block with a parameter identical to the
+  # +throw+'s parameter.  If found, that block is terminated, and +catch+
+  # returns the value given as the second parameter to +throw+.  If +throw+
+  # is not called, the block terminates normally.
   primitive_nobridge_env 'catch&' , 'catch', ':do:'
 
+  # MagLev only.  Hook method used in Ruby Spec Framework to invoke a
+  # debugger.  The MagLev implementation simply pauses.  If the VM was
+  # started in debug mode (<tt>-d</tt> on the command line), then the VM
+  # will drop into the Topaz debugger.
   def debugger
     # signals an Exception which is not trappable by Ruby or Smalltalk
     # and thus returns control to topaz debugger or other GCI main program.
     nil.pause
   end
 
+  def __fd_for_exec(arg)
+    if arg._isFixnum
+      return arg  if arg >= 0 && arg <= 2
+    elsif arg._isSymbol
+      return 0 if arg._equal?(:in) 
+      return 1 if arg._equal?(:out)
+      return 2 if arg._equal?(:err)
+    elsif arg._is_a?(File)
+      return 0 if arg._equal?(STDIN)
+      return 0 if arg._equal?(STDOUT)
+      return 0 if arg._equal?(STDERR)
+    end 
+    return nil
+  end
+
+  def __exec_prepare_fd_strm(fd_desc, v, dups_arr)
+    if (strm = __fd_for_exec(v))
+      dups_arr << fd_desc
+      dups_arr << strm 
+      return true
+    elsif v._isString || v._isArray
+      if v._isString
+        f = File.open(v, (fd_desc == 0) ? 'r' : 'a' )
+      else
+        f = File.open(*v)
+      end
+      f.__disable_autoclose
+      dups_arr << fd_desc
+      dups_arr << f.__fileno
+      return true
+    else
+      return false
+    end
+  end
+
+  # call-seq:
+  #   exec(command <, args*>)
+  #   exec(<env, > command <, args*>, <options>) 
+  # Replaces the current process by running the given external command.
+  # The following keys in options are not implemented
+  #    :pgroup, :rlimit_xxx , :umask .
+  def exec(*args)
+    firstarg = args[0]
+    env = nil
+    env_arr = [ false , true ]  # env_arr[0] is unsetenv_others arg to prim
+    # env_arr[1] is close_others arg to prim
+    options = nil
+    if firstarg._isHash
+      env = firstarg
+      env.each_pair { |k,v|
+        if k._isString
+          vstr = nil
+          unless v._equal?(nil)
+            vstr = Type.coerce_to(v, String, :to_str)
+          end
+          env_arr << k 
+          env_arr << vstr
+        else
+          raise ArgumentError, "non String key #{k} in env arg to exec"  
+        end
+      }
+      cmd = args[1]
+      idx = 2
+    else
+      cmd = firstarg
+      idx = 1
+    end
+    lastarg = args[-1]
+    lim = args.length
+    dups_arr = []
+    original_wd = Dir.getwd
+    wd_for_exec = nil
+    begin
+      if lastarg._isHash
+        options = lastarg
+        options.each_pair { |k, v|
+          if k._isSymbol
+            if k._equal?(:chdir)
+              wd_for_exec = v
+            elsif k._equal?(:close_others)
+              if v._equal?(true)
+                env_arr[1] = true
+              elsif v._equal?(false)
+                env_arr[1] = false
+              else
+                raise ArgumentError, "value #{v} for :close_others neither true nor false, in exec"
+              end
+            elsif k._equal?( :unsetenv_other )
+              if v._equal?(true)
+                env_arr[0] = true
+              else
+                raise ArgumentError, "value #{v} for :unsetenv_other is not true, in exec"
+              end
+            else
+              raise ArgumentError, "option #{k} not recognized for exec"
+            end
+          elsif k._is_a?(IO) 
+            unless v._equal?(:close)
+              raise ArgumentError, "anIO=>#{v} not a valid option for exec"
+            end
+          elsif (fd_desc = __fd_for_exec(k))
+            unless __exec_prepare_fd_strm(fd_desc, v, dups_arr)
+              raise ArgumentError, "bad stream #{v} for #{k}=>stream in exec"
+            end
+          elsif k._isArray
+            k.each { | kelem |
+              if (k_desc = __fd_for_exec(kelem))
+                unless __exec_prepare_fd_strm(k_desc, v, dups_arr)
+                  raise ArgumentError, "bad stream #{v} for #{kelem} of #{k}=>stream in exec"
+                end
+              else
+                raise ArgumentError, "invalid element #{kelem} of #{k}=>stream in exec"
+              end
+            }
+          else
+            raise ArgumentError, "invalid option #{k} for exec"
+          end
+        }
+        lim -= 1
+      end
+      cmd = Type.coerce_to(cmd, String, :to_str)
+      arguments = []
+      while idx < lim
+        arguments << Type.coerce_to(args[idx], String, :to_str)
+        idx += 1
+      end
+      if wd_for_exec
+        Dir.chdir(wd_for_exec)
+      end
+      self.__execv(cmd, env_arr, dups_arr, *arguments)
+      raise 'Unexpected return from Kernel.__execv'
+    ensure
+      Errno.handle(Dir.__chdir(original_wd), "chdir back to #{original_wd}")
+    end
+  end
+
+  primitive '__execv*', 'execv:envVars:fdDups:args:'
+
   primitive_nobridge '__eval_with_position', '_eval:binding:with:fileName:lineNumber:'
 
+  # call-seq:
+  #   eval(string <, binding <, file <, line> > >) => obj
+  #
+  # Evaluates the Ruby expression(s) in +string+.  If +binding+ is given,
+  # the evaluation is performed in its context.  The binding must be a
+  # +Binding+ object.  If the optional +file+ and +line+ parameters are
+  # present, they will be used when reporting syntax errors.
   def eval(*args, &block_arg)
     #   should always come here via a bridge method , thus 0x3N for vcgl ...
     nargs = args.size
@@ -107,7 +294,7 @@ module Kernel
     if nargs > 4
       raise ArgumentError, 'too many args'
     end
-    lex_path = self.__getRubyVcGlobal(0x32) # synthesized by AST to IR code in .mcz
+    lex_path = self.__getRubyVcGlobal(0x32) # __lexPath, synthesized by AST to IR code in .mcz
     str = args[0]
     bnd = args[1]
     file = args[2]
@@ -135,6 +322,10 @@ module Kernel
     res
   end
 
+  # Initiates the termination of the Ruby script by raising the
+  # +SystemExit+ exception. This exception may be caught. The optional
+  # +arg+ parameter is used to return a status code to the invoking
+  # environment.
   def exit(arg=0)
     status = 9
     if (arg._equal?(true))
@@ -143,6 +334,17 @@ module Kernel
       status = arg
     end
     raise SystemExit.new(status)
+  end
+
+  # call-seq:
+  #   exit!(true | false | status=1)
+  #
+  # MagLev: Not Implemented.  Raises NotImplementedError
+  #
+  # Similar to <tt>Kernel.exit</tt>, but exception handling,
+  # <tt>at_exit</tt> functions and finalizers are bypassed.
+  def exit!(*args)
+    raise NotImplementedError, "Kernel.exit! is not implemented."
   end
 
   primitive 'format*', 'sprintf:with:'
@@ -273,7 +475,7 @@ module Kernel
   #  automatically closed when the block terminates. The call
   #  returns the value of the block.
   #
-#  Following pipe behavior probably not implemented yet in Maglev. 
+  #  Following pipe behavior probably not implemented yet in Maglev.
   #  If <i>path</i> starts with a pipe character, a subprocess is
   #  created, connected to the caller by a pair of pipes. The returned
   #  <code>IO</code> object may be used to write to the standard input
@@ -420,9 +622,9 @@ module Kernel
 
   def raise(ex_class, message)
     if ex_class._isString
-      msg = ex_class 
+      msg = ex_class
       if message._isString
-         msg << message
+        msg << message
       end
       raise(RuntimeError, msg)
     else
@@ -433,9 +635,9 @@ module Kernel
 
   def raise(ex_class, message, stack)
     if ex_class._isString
-      msg = ex_class 
+      msg = ex_class
       if message._isString
-         msg << message
+        msg << message
       end
       raise(RuntimeError, msg, stack)
     else
@@ -491,7 +693,7 @@ module Kernel
     end
     res
   end
- 
+
   def require(name)
     RUBY.require(Type.coerce_to(name, String, :to_str))
   end
@@ -519,16 +721,16 @@ module Kernel
   end
 
   primitive_nobridge '__select*', 'selectRead:write:error:timeout:'
-  
+
   def select(reads, writes=nil, errs=nil, timeout=nil)
     if timeout._isFixnum
-      ms = timeout * 1000 
+      ms = timeout * 1000
       unless ms._isFixnum && ms >= 0
         raise ArgumentError , "IO#select, timeout not representable as Fixnum milliseconds >=0"
       end
     elsif timeout._not_equal?(nil)
-      timeout = Type.coerce_to(timeout, Float, :to_f) 
-      ms = (timeout * 1000.0 ).to_int  
+      timeout = Type.coerce_to(timeout, Float, :to_f)
+      ms = (timeout * 1000.0 ).to_int
       unless ms._isFixnum && ms >= 0
         raise ArgumentError , "IO#select, timeout not representable as Fixnum milliseconds >=0"
       end
@@ -591,7 +793,7 @@ module Kernel
 
   primitive_nobridge '__system_exec', '_system:'
 
-  def `(arg)
+  def `(arg)                         #` close quote for Emacs higlighting
     # called from generated code
     arg = Type.coerce_to(arg, String, :to_str)
     arr = __system_exec(arg)  #   raw_status is arr[0]
@@ -631,9 +833,9 @@ module Kernel
     end
     regex = str.__get_pattern(pattern, true)
     if (match = regex.__match_vcglobals(str, 0x30))
-       res = str.__replace_match_with(match, block.call(match[0]).to_s)
+      res = str.__replace_match_with(match, block.call(match[0]).to_s)
     else
-       res = str.dup
+      res = str.dup
     end
     res.__storeRubyVcGlobal(0x21) # store into caller's $_
     res
@@ -707,6 +909,7 @@ module Kernel
     return false
   end
 
+  # See <tt>Signal.trap</tt>.
   def trap(sig, command=nil, &block)
     Signal.trap(sig, command, &block)
   end
@@ -731,6 +934,8 @@ module Kernel
     end
   end
 
+  # Uses the integer +cmd+ to perform various tests on +file1+, or on
+  # +file1+ and +file2+.
   def test(cmd, file1, file2=MaglevUndefined)
     if file2._equal?(MaglevUndefined)
       return self.test(cmd, file1)
@@ -853,7 +1058,7 @@ module Kernel
     # called from Smalltalk
     block.call(new_value)
   end
- 
+
   def __trace_var(name, &block)
     unless name._isSymbol
       name = Type.coerce_to(name, String, :to_str)
@@ -864,18 +1069,18 @@ module Kernel
 
   def trace_var(name, ignored_cmd=MaglevUndefined , &block)
     # cmd is currently ignored
-    # name must be a String or Symbol beginning with '$' 
+    # name must be a String or Symbol beginning with '$'
     # if block is nil, has no effect
     if block_given?
-      __trace_var(name, &block) 
+      __trace_var(name, &block)
     end
   end
 
   def untrace_var(name, ignored_cmd=MaglevUndefined)
     # cmd is currently ignored
-    # name must be a String or Symbol beginning with '$' 
+    # name must be a String or Symbol beginning with '$'
     blk = nil  #  shut off tracing for specified name
-    __trace_var(name, &blk) 
+    __trace_var(name, &blk)
   end
 
 end

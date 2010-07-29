@@ -1,17 +1,43 @@
+#--
+# Since the MagLev VM ships with a copy of openssl, we use that
+# implementation of message digests for both the OpenSSL library and the
+# Digest Library.
+#++
 
 #
-# The Digest module wraps some common methods on various hashing
-# algorithms.  The methods provide an algorithm agnostic API for dealing
-# with the digests.  Each implementation of a Digest algorithm (MD5, SHA1,
-# etc.) implements the following methods:
+# The Digest module defines a common API for various hashing algorithms
+# (MD5, SHA1, etc.).  The methods provide an algorithm agnostic API for
+# dealing with the digests.  Each implementation of a Digest algorithm
+# implements conforms to the API defined in Digest::Instance.  The most
+# used methods include:
 #
-#    reset()      # Reset state
-#    finish()     # finalize state, calculate and return the hash
-#    update(str)  # Add more data to the state
-#    <<(str)      # alias :<< :update
-#    block_length #
+#   reset()         # Reset state
+#   finish()        # finalize state, calculate and return the hash
+#   update(str)     # Add more data to the state
+#   <<(str)         # alias :<< :update
 #
+# MagLev supports the following digests: MD5, SHA1.
+#
+# == Examples
+#
+#   require 'digest'
+#   Digest::MD5.hexdigest("my data")  # => "1291e1c0aa879147f51f4a279e7c2e55"
+#
+# You can also incrementally add data to a digest (e.g., reading a stream
+# from IO):
+#
+#   require 'digest'
+#   sha1 = Digest::SHA1.new
+#   sha1 << "some data"
+#   sha1 << "more data"
+#   sha1.hexdigest      # => "813a169342f956720ff4333f5777e629b6cb4f9a"
 module Digest
+
+  autoload :MD5,  'digest/md5'
+  autoload :SHA1, 'digest/sha1'
+  autoload :SHA256, 'digest/sha256'
+  autoload :SHA384, 'digest/sha384'
+  autoload :SHA512, 'digest/sha512'
 
   # call-seq:
   #     Digest.hexencode(string) -> hexencoded_string
@@ -25,31 +51,25 @@ module Digest
   end
   module_function :hexencode
 
-#   def const_missing(c)
-#     # Recognize :SHA256, :SHA384, :SHA512 and load up the right libs
-#     # then return Digest.const_get(c)
-#     raise NotImplementedError
-#   end
-
-  # This module provides instance methods for a digest implementation
-  # object to calculate message digest values.
+  # This module defines the API each digest implementation must support.
+  # Provides default implementation for many of the methods.
   module Instance
-    # Instance methods that *should* be overridden
-
     # call-seq:
     #     digest_obj.update(string) -> digest_obj
     #     digest_obj << string -> digest_obj
     #
-    # Updates the digest using a given _string_ and returns self.
+    # Updates the digest using a given +string+ and returns self.
     #
     # The update() method and the left-shift operator are overridden by
     # each implementation subclass. (One should be an alias for the
     # other)
     def update(arg)
-      raise NotImplementedError, "#{self} does not implement update()"
+      raise NotImplementedError, "#{self.class.name} does not implement update()"
     end
+
+    # An alais for #update.
     def <<(arg)
-      raise NotImplementedError, "#{self} does not implement <<()"
+      raise NotImplementedError, "#{self.class.name} does not implement <<()"
     end
 
     # call-seq:
@@ -63,7 +83,7 @@ module Digest
     # #digest!() instead, which ensures that internal data be reset for
     # security reasons.
     def finish
-      raise NotImplementedError, "#{self} does not implement finish()"
+      raise NotImplementedError, "#{self.class.name} does not implement finish()"
     end
 
     # call-seq:
@@ -73,7 +93,7 @@ module Digest
     #
     # This method is overridden by each implementation subclass.
     def reset
-      raise NotImplementedError, "#{self} does not implement reset()"
+      raise NotImplementedError, "#{self.class.name} does not implement reset()"
     end
 
     # call-seq:
@@ -95,7 +115,7 @@ module Digest
     #
     # This method is overridden by each implementation subclass.
     def block_length
-      raise NotImplementedError, "#{self} does not implement block_length()"
+      raise NotImplementedError, "#{self.class.name} does not implement block_length()"
     end
 
     # Instance methods that may be overridden
@@ -109,9 +129,9 @@ module Digest
     # given, checks whether they have the same hash value.  Otherwise
     # returns false.
     def ==(other)
-      str1 = Type.coerce_to(digest, String, :to_str)
+      str1 = Type.coerce_to(hexdigest, String, :to_str)
       if other.kind_of?(Digest::Instance)
-        str2 = Type.coerce_to(other.digest, String, :to_str)
+        str2 = Type.coerce_to(other.hexdigest, String, :to_str)
       else
         str2 = Type.coerce_to(other, String, :to_str)
       end
@@ -123,11 +143,12 @@ module Digest
     #
     # Creates a printable version of the digest object.
     def inspect
-      #  #<Digest::ClassName: xxxxx...xxxx>
       "#<#{self.class}: #{self.hexdigest}>"
     end
 
+    #--
     # Instance methods that are not normally overridden
+    #++
 
     # call-seq:
     #     digest_obj.new -> another_digest_obj
@@ -135,7 +156,9 @@ module Digest
     # Returns a new, initialized copy of the digest object.  Equivalent
     # to digest_obj.clone().reset().
     def new
-      self.clone().reset()
+      clone = self.clone
+      clone.reset
+      clone
     end
 
     # call-seq:
@@ -150,9 +173,7 @@ module Digest
     # after the process.
     def digest(string = MaglevUndefined)
       if string.equal?(MaglevUndefined)
-        # Currently, getting the digest is non-destructive, so just
-        # calculate and return (don't bother cloning)
-        klone = clone
+        klone = self.clone
         value = klone.finish
         klone.reset
       else
@@ -186,19 +207,7 @@ module Digest
     # _string_ in a hex-encoded form, resetting the digest to the initial
     # state before and after the process.
     def hexdigest(string = MaglevUndefined)
-      if string.equal?(MaglevUndefined)
-        # Currently, getting the digest is non-destructive, so just
-        # calculate and return (don't bother cloning)
-        klone = clone
-        value = klone.finish
-        klone.reset
-      else
-        reset
-        update(string)
-        value = finish
-        reset
-      end
-      Digest.hexencode(value)
+      Digest.hexencode(digest(string))
     end
 
     # call-seq:
@@ -255,10 +264,10 @@ module Digest
     # Returns the hex-encoded hash value of a given _string_.  This is
     # almost equivalent to
     # Digest.hexencode(Digest::Class.new(*parameters).digest(string)).
-    def self.hexdigest(string, *rest)
-      d = new(*rest)
+    def self.hexdigest(string)
+      d = new(self.digest_name)
       sum = d.digest(string)
-      Digest.hexencode(sum)
+      ::Digest.hexencode(sum)
     end
 
     # creates a digest object and reads a given file, name.
@@ -267,15 +276,87 @@ module Digest
     #   => "f02e3c85572dc9ad7cb77c2a638e3be24cc1b5bea9fdbb0b0299c9668475c534"
     #
     def self.file(name)
-      f = File.open(name, 'r')
+      raise TypeError, "Nil passed" if name.nil?
+      name_str = name.to_str
+      raise Errno::EISDIR if File.directory?(name_str)
+      f = File.open(name_str, 'r')
       contents = f.read(nil)
-      self.new(contents) 
+      self.new(contents)
     end
   end
 
-  # This abstract class provides a common interface to message digest
-  # implementation classes written in C.
+  # This abstract class provides a common implementation for message
+  # digests that will use the OpenSSL implementation.  Each derived class
+  # should call new with the appropriate OpenSSL implementation, e.g.,:
+  #
+  # class ::Digest::MD5 < ::Digest::Base
+  #   def self.md5(string)
+  #     new(string)
+  #   end
+  #
+  #   def initialize(str = nil)
+  #     super(OpenSSL::Digest.const_get('MD5').new(str))
+  #   end
+  # end
+
   class Base < ::Digest::Class
-    # Right now, we only support MD5, so all implementation is in md5.rb
+    def initialize(impl)
+      @impl = impl # OpenSSL::Digest.const_get(algo).new(str)
+      self
+    end
+
+    def block_length
+      @impl.block_length
+    end
+
+    def digest_length
+      @impl.digest_length
+    end
+
+    alias :length :size
+
+    def finish
+      @impl.finish
+    end
+
+    def reset
+      @impl.reset
+    end
+
+    def update(arg)
+      @impl.update(arg)
+    end
+    alias :<< :update
+
+    def digest(str = MaglevUndefined)
+      @impl.digest(str)
+    end
+
+    private
+    def to_str(bignum)
+      l = digest_length
+      bytes = Array.new(l)
+      b = bignum
+      l.times do |i|
+        bytes[l - i - 1] =  b & 0xFF
+        b = b >> 8
+      end
+      bytes.pack("C*")
+    end
+
+    # ['SHA256', 'SHA512'].each do |klass_name|
+    #   klass = Class.new(::Digest::Base) do
+    #     define_method(:initialize) do |str|
+    #       super(OpenSSL::Digest.const_get(klass_name).new(str))
+    #     end
+    #
+    #     singleton = (class << klass; self; end)
+    #     singleton.class_eval{
+    #       define_method(:"#{klass_name}") {|string| new(string) }
+    #     }
+    #   end
+    #   const_set(klass_name, klass)
+    # end
   end
 end
+require 'openssl'
